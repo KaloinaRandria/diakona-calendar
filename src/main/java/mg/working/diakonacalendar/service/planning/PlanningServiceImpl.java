@@ -3,6 +3,7 @@ package mg.working.diakonacalendar.service.planning;
 
 import lombok.RequiredArgsConstructor;
 import mg.working.diakonacalendar.dto.PeriodePlanningDto;
+import mg.working.diakonacalendar.dto.PlanningRangeResultDto;
 import mg.working.diakonacalendar.entity.*;
 import mg.working.diakonacalendar.exception.BadRequestException;
 import mg.working.diakonacalendar.exception.NotFoundException;
@@ -36,7 +37,7 @@ public class PlanningServiceImpl implements PlanningService {
         if (groupes.size() < 2) throw new BadRequestException("Il faut au moins 2 groupes actifs");
         if (groupes.size() != 5) {
             // tu peux enlever si tu veux être strict
-            // throw new BadRequestException("Le système attend 5 groupes actifs");
+             throw new BadRequestException("Le système attend 5 groupes actifs");
         }
 
         Optional<Periode> exist = periodeRepo.findByAnneeAndMois(annee, mois);
@@ -132,6 +133,32 @@ public class PlanningServiceImpl implements PlanningService {
         Periode p = periodeRepo.findByAnneeAndMois(annee, mois)
                 .orElseThrow(() -> new NotFoundException("Planning introuvable"));
         periodeRepo.delete(p);
+    }
+
+    @Override
+    public PlanningRangeResultDto genererPlanningRange(int anneeDebut, int moisDebut,
+                                                       int anneeFin, int moisFin,
+                                                       boolean overwrite) {
+
+        validateAnneeMois(anneeDebut, moisDebut);
+        validateAnneeMois(anneeFin, moisFin);
+
+        YearMonth start = YearMonth.of(anneeDebut, moisDebut);
+        YearMonth end = YearMonth.of(anneeFin, moisFin);
+
+        if (end.isBefore(start)) {
+            throw new BadRequestException("La période de fin ne doit pas être avant la période de début");
+        }
+
+        List<PeriodePlanningDto> results = new ArrayList<>();
+
+        YearMonth cur = start;
+        while (!cur.isAfter(end)) {
+            results.add(genererPlanning(cur.getYear(), cur.getMonthValue(), overwrite));
+            cur = cur.plusMonths(1);
+        }
+
+        return new PlanningRangeResultDto(results.size(), results);
     }
 
     // ----------------- Helpers -----------------
