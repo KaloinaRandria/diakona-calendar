@@ -30,7 +30,8 @@ public class PlanningRestController {
     }
 
     /**
-     * Récupère le planning d'un mois (si existe).
+     * /api/planning/2024/1  => planning de janvier 2024
+       - Retourne le planning existant ou 404 si pas trouvé
      */
     @GetMapping("/{annee}/{mois}")
     public PeriodePlanningDto getPlanning(@PathVariable int annee, @PathVariable int mois) {
@@ -46,6 +47,19 @@ public class PlanningRestController {
         planningService.deletePlanning(annee, mois);
     }
 
+
+    /**
+     * /api/planning/generer-range
+      {
+        "anneeDebut": 2024,
+        "moisDebut": 1,
+        "anneeFin": 2024,
+        "moisFin": 3,
+        "overwrite": true
+      }
+       - Génère les plannings mensuels de janvier à mars 2024.
+       - overwrite=true : regénère les plannings existants dans la plage
+     **/
     @PostMapping("/generer-range")
     @ResponseStatus(HttpStatus.CREATED)
     public PlanningRangeResultDto genererRange(@RequestBody GeneratePlanningRangeRequest req) {
