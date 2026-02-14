@@ -86,9 +86,25 @@ public class PlanningServiceImpl implements PlanningService {
 
                 if (!workedLastSunday) {
 
-                    ServiceSlot service =
+                    // services déjà utilisés ce dimanche
+                    Set<ServiceSlot> usedServices = toSave.stream()
+                            .filter(a -> a.getDimanche().equals(d))
+                            .map(Affectation::getService)
+                            .collect(Collectors.toSet());
+
+                    ServiceSlot preferred =
                             lastService.getOrDefault(g.getId(), ServiceSlot.SERVICE_2)
-                                    .opposite(); // alternance automatique
+                                    .opposite();
+
+                    ServiceSlot service;
+
+                    // Si service préféré dispo → on prend
+                    if (!usedServices.contains(preferred)) {
+                        service = preferred;
+                    } else {
+                        // sinon on prend l'autre
+                        service = preferred.opposite();
+                    }
 
                     toSave.add(affect(d, g, service));
 
