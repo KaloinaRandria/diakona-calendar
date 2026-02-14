@@ -4,6 +4,8 @@ package mg.working.diakonacalendar.service.planning;
 import mg.working.diakonacalendar.dto.PeriodePlanningDto;
 import mg.working.diakonacalendar.dto.PlanningRangeResultDto;
 
+import java.time.LocalDate;
+
 public interface PlanningService {
     PeriodePlanningDto genererPlanning(int annee, int mois, boolean overwrite);
     PeriodePlanningDto getPlanning(int annee, int mois);
@@ -12,4 +14,6 @@ public interface PlanningService {
     PlanningRangeResultDto genererPlanningRange(int anneeDebut, int moisDebut,
                                                 int anneeFin, int moisFin,
                                                 boolean overwrite);
+
+    public void generate(LocalDate start, LocalDate end);
 }

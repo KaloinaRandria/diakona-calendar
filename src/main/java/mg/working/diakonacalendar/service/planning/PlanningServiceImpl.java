@@ -31,97 +31,13 @@ public class PlanningServiceImpl implements PlanningService {
     @Override
     public PeriodePlanningDto genererPlanning(int annee, int mois, boolean overwrite) {
 
-        validateAnneeMois(annee, mois);
-
-        List<Groupe> groupes = groupeRepo.findByActifTrueOrderByCodeAsc();
-        if (groupes.size() != 5)
-            throw new BadRequestException("Le système exige exactement 5 groupes actifs");
-
-        Optional<Periode> exist = periodeRepo.findByAnneeAndMois(annee, mois);
-        if (exist.isPresent()) {
-            if (!overwrite) return buildPlanningDto(exist.get());
-            periodeRepo.delete(exist.get());
-            periodeRepo.flush();
-        }
-
-        // 1️⃣ Création période
-        Periode periode = periodeRepo.save(
-                Periode.builder().annee(annee).mois(mois).build()
-        );
-
-        // 2️⃣ Générer dimanches
-        List<Dimanche> dimanches = dimancheRepo.saveAll(generateSundays(periode));
-
-        List<Affectation> toSave = new ArrayList<>();
-
-        // 3️⃣ Charger historique global
-        Map<UUID, LocalDate> lastWorkedDate = new HashMap<>();
-        Map<UUID, ServiceSlot> lastService = new HashMap<>();
-
-        for (Groupe g : groupes) {
-            affectationRepo
-                    .findTopByGroupeIdOrderByDimanche_DateDimancheDesc(g.getId())
-                    .ifPresent(a -> {
-                        lastWorkedDate.put(g.getId(), a.getDimanche().getDateDimanche());
-                        lastService.put(g.getId(), a.getService());
-                    });
-        }
-
-        int cursor = 0;
-
-        for (Dimanche d : dimanches) {
-
-            int maxServices = d.isLast() ? 1 : 2;
-            int assigned = 0;
-
-            while (assigned < maxServices) {
-
-                Groupe g = groupes.get(cursor % groupes.size());
-
-                LocalDate lastDate = lastWorkedDate.get(g.getId());
-
-                boolean workedLastSunday =
-                        lastDate != null &&
-                                lastDate.plusWeeks(1).equals(d.getDateDimanche());
-
-                if (!workedLastSunday) {
-
-                    // services déjà utilisés ce dimanche
-                    Set<ServiceSlot> usedServices = toSave.stream()
-                            .filter(a -> a.getDimanche().equals(d))
-                            .map(Affectation::getService)
-                            .collect(Collectors.toSet());
-
-                    ServiceSlot preferred =
-                            lastService.getOrDefault(g.getId(), ServiceSlot.SERVICE_2)
-                                    .opposite();
-
-                    ServiceSlot service;
-
-                    // Si service préféré dispo → on prend
-                    if (!usedServices.contains(preferred)) {
-                        service = preferred;
-                    } else {
-                        // sinon on prend l'autre
-                        service = preferred.opposite();
-                    }
-
-                    toSave.add(affect(d, g, service));
-
-                    lastWorkedDate.put(g.getId(), d.getDateDimanche());
-                    lastService.put(g.getId(), service);
-
-                    assigned++;
-                }
-
-                cursor++;
-            }
-        }
-
-        affectationRepo.saveAll(toSave);
-
-        return buildPlanningDto(periode);
+        return genererPlanningRange(
+                annee, mois,
+                annee, mois,
+                overwrite
+        ).plannings().get(0);
     }
+
 
 
     @Override
@@ -149,22 +65,102 @@ public class PlanningServiceImpl implements PlanningService {
         validateAnneeMois(anneeDebut, moisDebut);
         validateAnneeMois(anneeFin, moisFin);
 
-        YearMonth start = YearMonth.of(anneeDebut, moisDebut);
-        YearMonth end = YearMonth.of(anneeFin, moisFin);
+        YearMonth startYM = YearMonth.of(anneeDebut, moisDebut);
+        YearMonth endYM = YearMonth.of(anneeFin, moisFin);
 
-        if (end.isBefore(start)) {
+        if (endYM.isBefore(startYM)) {
             throw new BadRequestException("La période de fin ne doit pas être avant la période de début");
         }
 
-        List<PeriodePlanningDto> results = new ArrayList<>();
+        // 1️⃣ Supprimer si overwrite
+        if (overwrite) {
+            YearMonth cur = startYM;
+            while (!cur.isAfter(endYM)) {
+                periodeRepo.findByAnneeAndMois(cur.getYear(), cur.getMonthValue())
+                        .ifPresent(periodeRepo::delete);
+                cur = cur.plusMonths(1);
+            }
+        }
 
-        YearMonth cur = start;
-        while (!cur.isAfter(end)) {
-            results.add(genererPlanning(cur.getYear(), cur.getMonthValue(), overwrite));
+        // 2️⃣ Créer toutes les périodes + dimanches
+        YearMonth cur = startYM;
+        List<Periode> periodes = new ArrayList<>();
+
+        while (!cur.isAfter(endYM)) {
+
+            Periode periode = periodeRepo.save(
+                    Periode.builder()
+                            .annee(cur.getYear())
+                            .mois(cur.getMonthValue())
+                            .build()
+            );
+
+            dimancheRepo.saveAll(generateSundays(periode));
+            periodes.add(periode);
+
             cur = cur.plusMonths(1);
         }
 
-        return new PlanningRangeResultDto(results.size(), results);
+        // 3️⃣ Génération GLOBALE continue
+        LocalDate startDate = startYM.atDay(1);
+        LocalDate endDate = endYM.atEndOfMonth();
+
+        generate(startDate, endDate);
+
+        // 4️⃣ Retour DTO
+        List<PeriodePlanningDto> dtos =
+                periodes.stream()
+                        .map(this::buildPlanningDto)
+                        .toList();
+
+        return new PlanningRangeResultDto(dtos.size(), dtos);
+    }
+
+    @Override
+    public void generate(LocalDate start, LocalDate end) {
+
+        List<Dimanche> dimanches = dimancheRepo.findBetween(start, end);
+        List<Groupe> groupes = groupeRepo.findAll();
+
+        groupes.sort(Comparator.comparing(Groupe::getLibelle));
+
+        Map<UUID, LocalDate> lastWork = new HashMap<>();
+        Map<UUID, ServiceSlot> lastService = new HashMap<>();
+
+        int index = 0; // rotation globale
+
+        for (Dimanche d : dimanches) {
+
+            int assigned = 0;
+            int attempts = 0;
+
+            while (assigned < 2 && attempts < groupes.size()) {
+
+                Groupe g = groupes.get(index % groupes.size());
+                index++;
+                attempts++;
+
+                // règle : pas deux dimanches de suite
+                if (lastWork.containsKey(g.getId())
+                        && lastWork.get(g.getId()).equals(d.getDateDimanche().minusWeeks(1))) {
+                    continue;
+                }
+
+                // alternance service
+                ServiceSlot service =
+                        lastService.getOrDefault(g.getId(), ServiceSlot.SERVICE_2)
+                                .opposite();
+
+                affectationRepo.save(
+                        new Affectation(UUID.randomUUID(), d, g, service)
+                );
+
+                lastWork.put(g.getId(), d.getDateDimanche());
+                lastService.put(g.getId(), service);
+
+                assigned++;
+            }
+        }
     }
 
     // ----------------- Helpers -----------------
