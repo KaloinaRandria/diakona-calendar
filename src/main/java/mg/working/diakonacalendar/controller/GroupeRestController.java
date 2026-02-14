@@ -14,6 +14,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/groupes")
 @RequiredArgsConstructor
+@CrossOrigin("http://localhost:4200")
 public class GroupeRestController {
 
     private final GroupeService groupeService;

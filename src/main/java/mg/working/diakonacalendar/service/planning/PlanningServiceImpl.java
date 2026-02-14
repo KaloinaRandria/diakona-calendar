@@ -1,6 +1,9 @@
+// ============================
+// PlanningServiceImpl.java
+// ============================
 package mg.working.diakonacalendar.service.planning;
 
-
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import mg.working.diakonacalendar.dto.PeriodePlanningDto;
 import mg.working.diakonacalendar.dto.PlanningRangeResultDto;
@@ -27,18 +30,16 @@ public class PlanningServiceImpl implements PlanningService {
     private final DimancheRepo dimancheRepo;
     private final AffectationRepo affectationRepo;
     private final DebutMoisRepo debutMoisRepo;
+    private final EntityManager em;
 
     @Override
     public PeriodePlanningDto genererPlanning(int annee, int mois, boolean overwrite) {
-
         return genererPlanningRange(
                 annee, mois,
                 annee, mois,
                 overwrite
         ).plannings().get(0);
     }
-
-
 
     @Override
     @Transactional(readOnly = true)
@@ -72,17 +73,27 @@ public class PlanningServiceImpl implements PlanningService {
             throw new BadRequestException("La période de fin ne doit pas être avant la période de début");
         }
 
-        // 1️⃣ Supprimer si overwrite
+        LocalDate startDate = startYM.atDay(1);
+        LocalDate endDate = endYM.atEndOfMonth();
+
+        // 1) OVERWRITE = on supprime d'abord les affectations du range, puis les périodes
         if (overwrite) {
-            YearMonth cur = startYM;
-            while (!cur.isAfter(endYM)) {
-                periodeRepo.findByAnneeAndMois(cur.getYear(), cur.getMonthValue())
+            affectationRepo.deleteByDimancheDateBetween(startDate, endDate);
+            em.flush();
+            em.clear();
+
+            YearMonth curDel = startYM;
+            while (!curDel.isAfter(endYM)) {
+                periodeRepo.findByAnneeAndMois(curDel.getYear(), curDel.getMonthValue())
                         .ifPresent(periodeRepo::delete);
-                cur = cur.plusMonths(1);
+                curDel = curDel.plusMonths(1);
             }
+            em.flush();
+            em.clear();
         }
 
-        // 2️⃣ Créer toutes les périodes + dimanches
+        // 2) Créer toutes les périodes + dimanches (si elles existent déjà et overwrite=false, ça peut planter
+        //    selon tes contraintes DB; sinon garde tel quel)
         YearMonth cur = startYM;
         List<Periode> periodes = new ArrayList<>();
 
@@ -101,13 +112,10 @@ public class PlanningServiceImpl implements PlanningService {
             cur = cur.plusMonths(1);
         }
 
-        // 3️⃣ Génération GLOBALE continue
-        LocalDate startDate = startYM.atDay(1);
-        LocalDate endDate = endYM.atEndOfMonth();
+        // 3) Génération globale sur la plage
+        generate(startDate, endDate, overwrite);
 
-        generate(startDate, endDate);
-
-        // 4️⃣ Retour DTO
+        // 4) Retour DTO
         List<PeriodePlanningDto> dtos =
                 periodes.stream()
                         .map(this::buildPlanningDto)
@@ -117,24 +125,31 @@ public class PlanningServiceImpl implements PlanningService {
     }
 
     @Override
-    public void generate(LocalDate start, LocalDate end) {
+    public void generate(LocalDate start, LocalDate end, boolean overwrite) {
 
         List<Dimanche> dimanches = dimancheRepo.findByDateDimancheBetween(start, end);
-        List<Groupe> groupes = groupeRepo.findAll();
+        dimanches.sort(Comparator.comparing(Dimanche::getDateDimanche));
 
+        if (!overwrite) {
+            List<UUID> ids = dimanches.stream().map(Dimanche::getId).toList();
+            if (!ids.isEmpty() && !affectationRepo.findByDimancheIdIn(ids).isEmpty()) {
+                throw new BadRequestException("Planning déjà généré sur cette période (overwrite=false).");
+            }
+        }
+
+        List<Groupe> groupes = groupeRepo.findAll();
         groupes.sort(Comparator.comparing(Groupe::getLibelle));
 
         Map<UUID, LocalDate> lastWork = new HashMap<>();
-        Map<UUID, ServiceSlot> lastService = new HashMap<>();
-
-        int index = 0; // rotation globale
+        int index = 0;
 
         for (Dimanche d : dimanches) {
 
+            int maxToAssign = d.isLast() ? 1 : 2; // dernier dimanche = 1 seul service
             int assigned = 0;
             int attempts = 0;
 
-            while (assigned < 2 && attempts < groupes.size()) {
+            while (assigned < maxToAssign && attempts < groupes.size()) {
 
                 Groupe g = groupes.get(index % groupes.size());
                 index++;
@@ -146,18 +161,17 @@ public class PlanningServiceImpl implements PlanningService {
                     continue;
                 }
 
-                // alternance service
-                ServiceSlot service =
-                        lastService.getOrDefault(g.getId(), ServiceSlot.SERVICE_2)
-                                .opposite();
+                // service déterministe: 1er assigné => SERVICE_1, 2e => SERVICE_2
+                ServiceSlot service = (assigned == 0) ? ServiceSlot.SERVICE_1 : ServiceSlot.SERVICE_2;
+                if (d.isLast()) service = ServiceSlot.SERVICE_1;
 
-                affectationRepo.save(
-                        new Affectation(UUID.randomUUID(), d, g, service)
-                );
+                affectationRepo.save(Affectation.builder()
+                        .dimanche(d)
+                        .groupe(g)
+                        .service(service)
+                        .build());
 
                 lastWork.put(g.getId(), d.getDateDimanche());
-                lastService.put(g.getId(), service);
-
                 assigned++;
             }
         }
@@ -197,21 +211,15 @@ public class PlanningServiceImpl implements PlanningService {
         return dimanches;
     }
 
-    private Affectation affect(Dimanche dimanche, Groupe groupe, ServiceSlot service) {
-        return Affectation.builder()
-                .dimanche(dimanche)
-                .groupe(groupe)
-                .service(service)
-                .build();
-    }
-
     @Transactional(readOnly = true)
     protected PeriodePlanningDto buildPlanningDto(Periode periode) {
+
         List<Dimanche> dimanches = dimancheRepo.findByPeriodeIdOrderByDateDimancheAsc(periode.getId());
         List<UUID> ids = dimanches.stream().map(Dimanche::getId).toList();
 
         List<Affectation> affs = ids.isEmpty() ? List.of() : affectationRepo.findByDimancheIdIn(ids);
-        // groupe lazy -> on force un accès pour éviter sérialisation foireuse
+
+        // force init lazy
         affs.forEach(a -> {
             a.getGroupe().getCode();
             a.getDimanche().getDateDimanche();

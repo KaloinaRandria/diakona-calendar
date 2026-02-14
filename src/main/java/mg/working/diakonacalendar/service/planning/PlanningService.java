@@ -15,5 +15,5 @@ public interface PlanningService {
                                                 int anneeFin, int moisFin,
                                                 boolean overwrite);
 
-    public void generate(LocalDate start, LocalDate end);
+    void generate(LocalDate start, LocalDate end, boolean overwrite);
 }
