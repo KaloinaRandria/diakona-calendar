@@ -119,7 +119,7 @@ public class PlanningServiceImpl implements PlanningService {
     @Override
     public void generate(LocalDate start, LocalDate end) {
 
-        List<Dimanche> dimanches = dimancheRepo.findBetween(start, end);
+        List<Dimanche> dimanches = dimancheRepo.findByDateDimancheBetween(start, end);
         List<Groupe> groupes = groupeRepo.findAll();
 
         groupes.sort(Comparator.comparing(Groupe::getLibelle));

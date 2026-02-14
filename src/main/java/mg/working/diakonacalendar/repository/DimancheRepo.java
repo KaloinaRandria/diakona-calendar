@@ -12,6 +12,11 @@ import java.util.UUID;
 public interface DimancheRepo extends JpaRepository<Dimanche, UUID> {
     List<Dimanche> findByPeriodeIdOrderByDateDimancheAsc(UUID periodeId);
     Optional<Dimanche> findByPeriodeIdAndFirstTrue(UUID periodeId);
-    List<Dimanche> findBetween(LocalDate start, LocalDate end);
+    List<Dimanche> findByDateDimancheBetween
+            (
+            LocalDate start,
+            LocalDate end
+    );
+
 }
 
