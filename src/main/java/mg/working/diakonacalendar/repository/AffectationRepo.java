@@ -5,9 +5,12 @@ import mg.working.diakonacalendar.entity.Affectation;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface AffectationRepo extends JpaRepository<Affectation, UUID> {
     List<Affectation> findByDimancheIdIn(List<UUID> dimancheIds);
     List<Affectation> findByDimancheId(UUID dimancheId);
+    Optional<Affectation> findTopByGroupeIdOrderByDimanche_DateDimancheDesc(UUID groupeId);
+
 }

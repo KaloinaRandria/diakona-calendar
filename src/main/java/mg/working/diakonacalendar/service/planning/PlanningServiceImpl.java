@@ -30,93 +30,83 @@ public class PlanningServiceImpl implements PlanningService {
 
     @Override
     public PeriodePlanningDto genererPlanning(int annee, int mois, boolean overwrite) {
+
         validateAnneeMois(annee, mois);
 
-        // Vérifie groupes
         List<Groupe> groupes = groupeRepo.findByActifTrueOrderByCodeAsc();
-        if (groupes.size() < 2) throw new BadRequestException("Il faut au moins 2 groupes actifs");
-        if (groupes.size() != 5) {
-            // tu peux enlever si tu veux être strict
-             throw new BadRequestException("Le système attend 5 groupes actifs");
-        }
+        if (groupes.size() != 5)
+            throw new BadRequestException("Le système exige exactement 5 groupes actifs");
 
         Optional<Periode> exist = periodeRepo.findByAnneeAndMois(annee, mois);
         if (exist.isPresent()) {
-            if (!overwrite) {
-                // retourne le planning existant
-                return buildPlanningDto(exist.get());
-            }
-            // overwrite => supprime (cascade si tes relations sont bien configurées)
+            if (!overwrite) return buildPlanningDto(exist.get());
             periodeRepo.delete(exist.get());
             periodeRepo.flush();
         }
 
-        // 1) Créer période
-        Periode periode = Periode.builder().annee(annee).mois(mois).build();
-        periode = periodeRepo.save(periode);
+        // 1️⃣ Création période
+        Periode periode = periodeRepo.save(
+                Periode.builder().annee(annee).mois(mois).build()
+        );
 
-        // 2) Générer dimanches
-        List<Dimanche> dimanches = generateSundays(periode);
-        dimanches = dimancheRepo.saveAll(dimanches);
+        // 2️⃣ Générer dimanches
+        List<Dimanche> dimanches = dimancheRepo.saveAll(generateSundays(periode));
 
-        // 3) Calculer leader du 1er dimanche (rotation stable)
-        // Rotation simple: index = (annee*12 + (mois-1)) % N
-        int n = groupes.size();
-        int monthSerial = annee * 12 + (mois - 1);
-        int leaderIndex = Math.floorMod(monthSerial, n);
-        Groupe leader = groupes.get(leaderIndex);
-        periode.setLeaderGroupe(leader);
-
-        // 4) Alternance du service pour le leader (début de mois)
-        ServiceSlot leaderService = debutMoisRepo.findTopByGroupeIdOrderByPeriode_AnneeDescPeriode_MoisDesc(leader.getId())
-                .map(DebutMois::getService)
-                .map(ServiceSlot::opposite)
-                .orElse(ServiceSlot.SERVICE_1);
-
-        DebutMois debutMois = DebutMois.builder()
-                .periode(periode)
-                .groupe(leader)
-                .service(leaderService)
-                .build();
-        debutMoisRepo.save(debutMois);
-
-        // 5) Affectations
-        Dimanche firstSunday = dimanches.stream().filter(Dimanche::isFirst)
-                .findFirst().orElseThrow(() -> new IllegalStateException("1er dimanche non trouvé"));
-
-        // 5.1 1er dimanche: leader dans leaderService + autre groupe dans l'autre service
         List<Affectation> toSave = new ArrayList<>();
-        toSave.add(affect(firstSunday, leader, leaderService));
 
-        // second groupe simple: le suivant dans la liste (différent du leader)
-        Groupe second = groupes.get((leaderIndex + 1) % n);
-        toSave.add(affect(firstSunday, second, leaderService.opposite()));
+        // 3️⃣ Charger historique global
+        Map<UUID, LocalDate> lastWorkedDate = new HashMap<>();
+        Map<UUID, ServiceSlot> lastService = new HashMap<>();
 
-        // 5.2 Autres dimanches: round-robin (2 groupes, dernier=1)
-        int cursor = (leaderIndex + 2) % n; // on continue après leader+second
+        for (Groupe g : groupes) {
+            affectationRepo
+                    .findTopByGroupeIdOrderByDimanche_DateDimancheDesc(g.getId())
+                    .ifPresent(a -> {
+                        lastWorkedDate.put(g.getId(), a.getDimanche().getDateDimanche());
+                        lastService.put(g.getId(), a.getService());
+                    });
+        }
+
+        int cursor = 0;
+
         for (Dimanche d : dimanches) {
-            if (d.isFirst()) continue;
 
-            if (d.isLast()) {
-                Groupe g = groupes.get(cursor);
-                toSave.add(affect(d, g, ServiceSlot.SERVICE_1)); // dernier dimanche = service 1 uniquement
-                cursor = (cursor + 1) % n;
-            } else {
-                Groupe g1 = groupes.get(cursor);
-                Groupe g2 = groupes.get((cursor + 1) % n);
+            int maxServices = d.isLast() ? 1 : 2;
+            int assigned = 0;
 
-                toSave.add(affect(d, g1, ServiceSlot.SERVICE_1));
-                toSave.add(affect(d, g2, ServiceSlot.SERVICE_2));
+            while (assigned < maxServices) {
 
-                cursor = (cursor + 2) % n;
+                Groupe g = groupes.get(cursor % groupes.size());
+
+                LocalDate lastDate = lastWorkedDate.get(g.getId());
+
+                boolean workedLastSunday =
+                        lastDate != null &&
+                                lastDate.plusWeeks(1).equals(d.getDateDimanche());
+
+                if (!workedLastSunday) {
+
+                    ServiceSlot service =
+                            lastService.getOrDefault(g.getId(), ServiceSlot.SERVICE_2)
+                                    .opposite(); // alternance automatique
+
+                    toSave.add(affect(d, g, service));
+
+                    lastWorkedDate.put(g.getId(), d.getDateDimanche());
+                    lastService.put(g.getId(), service);
+
+                    assigned++;
+                }
+
+                cursor++;
             }
         }
 
         affectationRepo.saveAll(toSave);
 
-        // retourne dto
         return buildPlanningDto(periode);
     }
+
 
     @Override
     @Transactional(readOnly = true)
