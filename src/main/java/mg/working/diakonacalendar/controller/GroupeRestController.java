@@ -14,7 +14,11 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/groupes")
 @RequiredArgsConstructor
+<<<<<<< Updated upstream
 @CrossOrigin("http://localhost:4200")
+=======
+@CrossOrigin(origins = "http://localhost:4200")
+>>>>>>> Stashed changes
 public class GroupeRestController {
 
     private final GroupeService groupeService;

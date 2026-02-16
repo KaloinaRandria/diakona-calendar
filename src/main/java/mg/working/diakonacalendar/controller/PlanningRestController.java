@@ -15,7 +15,11 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/planning")
 @RequiredArgsConstructor
+<<<<<<< Updated upstream
 @CrossOrigin("http://localhost:4200")
+=======
+@CrossOrigin(origins = "http://localhost:4200")
+>>>>>>> Stashed changes
 public class PlanningRestController {
 
     private final PlanningService planningService;
